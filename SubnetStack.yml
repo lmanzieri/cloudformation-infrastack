@@ -1,0 +1,221 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Template for combining all templates into one nested template for testing.sss"
+Parameters:
+  NatGatewayTemplateURL:
+    Default: https://s3.amazonaws.com/ativa-cf-templates/NatGatewayStack.yml
+    Type: String
+  SubnetAZ1Block:
+    Type: String
+  SubnetAZ2Block:
+    Type: String
+  DefaultRegion: 
+    Type: String
+  VpcId:
+    Type: String
+  NomeDoContexto:
+    Type: String
+  MultiZoneDeploy:
+    Type: String
+    Default: false
+    AllowedValues:
+    - true
+    - false
+  CreatePeering:
+    Type: String
+    Default: true
+    AllowedValues:
+    - true
+    - false
+  PeeringConnectionID:
+    Type: String
+  PeeringCIDRRange:
+    Type: String
+  IsPublicSubnet:
+    Type: String
+    Default: false
+    AllowedValues:
+    - true
+    - false
+  PublicSubnetID:
+    Type: String
+  InternetGatewayId:
+    Type: String
+  PublicCdirDestination:
+    Type: String
+    Default: '0.0.0.0/0'
+  Prefix:
+    Type: String
+  UsePrefix:
+    Type: String
+    Default: false
+    AllowedValues:
+    - true
+    - false
+
+Conditions: 
+  IsMultiZoneDeploymet: !Equals [ !Ref MultiZoneDeploy, 'true' ]
+  CanSetupAsPublicSubnet: !Equals [ !Ref IsPublicSubnet, 'true' ] 
+  CanSetupAsPrivateSubnet: !Equals [ !Ref IsPublicSubnet, 'false' ] 
+  canCreatePeering: !Equals [ !Ref CreatePeering, 'true' ]  
+  CanUsePrefix: !Equals [ !Ref UsePrefix, 'true' ]
+
+Resources:
+  subnetAZ1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+        - '0'
+        - Fn::GetAZs:
+            !Ref AWS::Region
+      CidrBlock: !Ref SubnetAZ1Block
+      MapPublicIpOnLaunch: 'False'
+      Tags:
+      - Key: Name
+        Value: !If [ CanUsePrefix, !Join ['-',[!Ref Prefix, !Ref "AWS::StackName", !Ref NomeDoContexto, "PrivateAZ1"]], !Join ["", [!Ref "AWS::StackName", !Ref NomeDoContexto, "-PrivateAZ1"]]]
+      - Key: Network
+        Value: private
+      VpcId:
+        !Ref VpcId
+
+  subnetAZ2:
+    Type: AWS::EC2::Subnet
+    Condition: IsMultiZoneDeploymet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+        - '1'
+        - Fn::GetAZs:
+            !Ref AWS::Region
+      CidrBlock: !Ref SubnetAZ2Block
+      MapPublicIpOnLaunch: 'False'
+      Tags:
+      - Key: Name
+        Value: !If [ CanUsePrefix, !Join ['-',[!Ref Prefix, !Ref "AWS::StackName", !Ref NomeDoContexto, "PrivateAZ2"]], !Join ["", [!Ref "AWS::StackName", !Ref NomeDoContexto, "-PrivateAZ2"]]]
+      - Key: Network
+        Value: private
+      VpcId:
+        !Ref VpcId
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        !Ref VpcId
+      Tags:
+      - Key: Name
+        Value: !Join ['-',[!Ref NomeDoContexto, "routeTable"]]
+
+  Route:
+    Type: AWS::EC2::Route
+    DependsOn: RouteTable
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: !Ref PeeringCIDRRange
+      VpcPeeringConnectionId: !Ref PeeringConnectionID
+
+  IGPublicRoute:
+    Condition: CanSetupAsPublicSubnet
+    DependsOn: ['RouteTable'] 
+    Type: AWS::EC2::Route
+    Properties: 
+      DestinationCidrBlock: !Ref PublicCdirDestination
+      RouteTableId: !Ref RouteTable
+      GatewayId: !Ref InternetGatewayId
+
+  SRTAAZ1:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'   
+    Properties:
+      SubnetId: !Ref subnetAZ1
+      RouteTableId: !Ref RouteTable
+
+  SRTAAZ2:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Condition: IsMultiZoneDeploymet    
+    Properties:
+      SubnetId: !Ref subnetAZ2
+      RouteTableId: !Ref RouteTable
+
+  NetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VpcId
+      Tags:
+      - Key: Name
+        Value: !Join ["", [!Ref NomeDoContexto, "-subnetRT"]]
+
+  NAEInPrivateAllowAllVPC:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    DependsOn: ['NetworkAcl']
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: 99
+      Protocol: -1
+      RuleAction: allow
+      Egress: false
+      CidrBlock: '0.0.0.0/0'
+
+  NAEOutPrivateAllowAllVPC:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    DependsOn: ['NetworkAcl', 'NAEInPrivateAllowAllVPC']    
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      RuleNumber: 99
+      Protocol: -1
+      RuleAction: allow
+      Egress: true
+      CidrBlock: '0.0.0.0/0'
+
+  SNAAPrivateAZ1:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    DependsOn: ['NetworkAcl', 'subnetAZ1']        
+    Properties:
+      SubnetId: !Ref subnetAZ1
+      NetworkAclId: !Ref NetworkAcl
+
+  SNAAPrivateAZ2:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    DependsOn: ['NetworkAcl', 'subnetAZ2']       
+    Condition: IsMultiZoneDeploymet    
+    Properties:
+      SubnetId: !Ref subnetAZ2
+      NetworkAclId: !Ref NetworkAcl
+
+  NatGatewayStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: CanSetupAsPrivateSubnet
+    Properties:
+      Parameters:
+        PublicSubnet: !Ref PublicSubnetID
+        PrivateRouteTable: !Ref RouteTable
+        PrivateNetworkAcl: !Ref NetworkAcl
+      TemplateURL: !Ref NatGatewayTemplateURL
+
+Outputs:
+  subnetAZ1: 
+    Value:
+      !Ref subnetAZ1
+    Export:
+      Name: !Join ['-',[!Ref NomeDoContexto, "subnetAZ1"]]
+  subnetAZ2:
+    Condition: IsMultiZoneDeploymet    
+    Value:
+      !Ref subnetAZ2
+    Export:
+      Name: !Join ['-',[!Ref NomeDoContexto, "subnetAZ2"]]
+  subnetPublic:
+    Condition: CanSetupAsPublicSubnet    
+    Value:
+      !Ref subnetAZ1
+    Export:
+      Name: publicSubnetId
+  RouteTable:
+    Value:
+      !Ref RouteTable
+    Export:
+      Name: !Join ['-',[!Ref NomeDoContexto, "routeTable"]]
+  NetworkAcl: 
+    Value:
+      !Ref NetworkAcl
+    Export:
+      Name: !Join ['-',[!Ref NomeDoContexto, "networkAcl"]]

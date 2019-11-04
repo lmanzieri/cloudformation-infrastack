@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Template to create infraestructure of network, vpc, subnet and domain."
+Parameters:
+  Contexto:
+    Type: String
+  CIDRRange:
+    Type: String
+  PrivateSubnetAZ1:
+    Type: String
+  PrivateSubnetAZ2:
+    Type: String
+  PublicSubnetAZ1:
+    Type: String  
+  PublicSubnetAZ2:
+    Type: String
+  DefaultRegion:
+    Description: Default region to create all resources
+    Type: String
+    Default: us-east-1
+  SubnetTemplateURL:
+    Default: https://s3.amazonaws.com/ativa-cf-templates/SubnetStack.yml
+    Type: String
+  MultiZoneDeploy:
+    Type: String
+    Default: true
+    AllowedValues:
+    - true
+    - false
+  CreatePeering:
+    Type: String
+    Default: true
+    AllowedValues:
+    - true
+    - false
+  PeerVPCId:
+    Type: AWS::EC2::VPC::Id
+  PeeringCIDRRange:
+    Type: String
+  DomainName:
+    Description: Domain name used to create a HostedZone in Route53
+    Type: String
+    Default: ativainvestimentos.com.br
+  Prefix:
+    Type: String
+    AllowedValues:
+    - dev
+    - hml
+    - prd
+  UsePrefix:
+    Type: String
+    Default: true
+    AllowedValues:
+    - true
+    - false
+
+Conditions: 
+  canCreatePeering: !Equals [ !Ref CreatePeering, 'true' ]  
+  CanUsePrefix: !Equals [ !Ref UsePrefix, 'true' ]  
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref CIDRRange
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: !Join ['-',[!Ref Prefix, !Ref Contexto, "vpc"]]
+
+  IGWBase:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Join ['-',[!Ref Prefix, !Ref Contexto, "igw"]]
+
+  VGAIGWBase:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId:
+        !Ref IGWBase
+      VpcId:
+        !Ref VPC
+
+  TopicNotificationStack:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Join ['-',[!Ref Prefix, "topicMonitor"]]
+      TopicName: !Join ['-',[!Ref Prefix, "topicMonitor"]]
+
+  MainHostedZone:
+    Type: "AWS::Route53::HostedZone"
+    Properties: 
+      Name: !Ref DomainName
+      VPCs:
+      - VPCId: !Ref VPC
+        VPCRegion: !Ref DefaultRegion
+  
+  vpcPeeringConnection:
+    Condition: canCreatePeering
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref VPC
+      PeerVpcId: !Ref PeerVPCId
+      PeerRegion: !Ref DefaultRegion
+
+  publicStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ['VPC', 'IGWBase', 'VGAIGWBase', 'TopicNotificationStack']
+    Properties:
+      NotificationARNs:
+      - !Ref TopicNotificationStack
+      Parameters:
+        SubnetAZ1Block: !Ref PublicSubnetAZ1
+        SubnetAZ2Block: !Ref PublicSubnetAZ2
+        DefaultRegion: !Ref DefaultRegion
+        VpcId: !Ref VPC
+        NomeDoContexto: !Join ['-',[!Ref Prefix, !Ref Contexto, "public"]]
+        MultiZoneDeploy: !Ref MultiZoneDeploy
+        CreatePeering: !Ref CreatePeering
+        PeeringConnectionID: !If [canCreatePeering, !Ref vpcPeeringConnection, 'none']
+        PeeringCIDRRange: !Ref PeeringCIDRRange
+        IsPublicSubnet: true
+        PublicSubnetID: none
+        InternetGatewayId: !Ref IGWBase
+        Prefix: !Ref Prefix
+        UsePrefix: !Ref UsePrefix
+      TemplateURL: !Ref SubnetTemplateURL
+
+  privateStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: ['VPC', 'IGWBase', 'VGAIGWBase', 'TopicNotificationStack', 'publicStack']
+    Properties:
+      NotificationARNs:
+      - !Ref TopicNotificationStack
+      Parameters:
+        SubnetAZ1Block: !Ref PrivateSubnetAZ1
+        SubnetAZ2Block: !Ref PrivateSubnetAZ2
+        DefaultRegion: !Ref DefaultRegion
+        VpcId: !Ref VPC
+        NomeDoContexto: !Join ['-',[!Ref Prefix, !Ref Contexto, "private"]]
+        MultiZoneDeploy: !Ref MultiZoneDeploy
+        CreatePeering: !Ref CreatePeering
+        PeeringConnectionID: !If [canCreatePeering, !Ref vpcPeeringConnection, 'none']
+        PeeringCIDRRange: !Ref PeeringCIDRRange
+        IsPublicSubnet: false
+        PublicSubnetID: !Join ['-',[!Ref Prefix, !Ref Contexto, "public", "subnetAZ1"]]
+        InternetGatewayId: !Ref IGWBase
+        Prefix: !Ref Prefix
+        UsePrefix: !Ref UsePrefix
+      TemplateURL: !Ref SubnetTemplateURL
+
+  PrivateSG:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: [VPC]
+    Properties: 
+      GroupName: !Join ['-',[!Ref Prefix, "privateSG"]]
+      GroupDescription: Security group that control allowed ports
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !GetAtt VPC.CidrBlock
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !GetAtt VPC.CidrBlock
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt VPC.CidrBlock
+      VpcId: !Ref VPC
+
+  PublicSG:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: [VPC]
+    Properties: 
+      GroupName: !Join ['-',[!Ref Prefix, "publicSG"]]
+      GroupDescription: Security group that control allowed ports
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !GetAtt VPC.CidrBlock
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !GetAtt VPC.CidrBlock
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !GetAtt VPC.CidrBlock
+      VpcId: !Ref VPC
+
+Outputs:
+  PrivateSG:
+    Value: !Ref PrivateSG
+    Export:
+      Name: !Join ['-',[!Ref Prefix, 'privateSG']]
+  PublicSG:
+    Value: !Ref PublicSG
+    Export:
+      Name: !Join ['-',[!Ref Prefix, 'publicSG']]
+  VpcId:
+    Value:
+      !Ref VPC
+    Export:
+      Name: !Join ['-',[!Ref Prefix, 'vpcId']]
+  CIDRRange:
+    Value:
+      !GetAtt VPC.CidrBlock
+    Export:
+      Name: CIDRRange
+  HostedZoneId:
+    Value:
+      !Ref MainHostedZone
+    Export:
+      Name: !Join ['-',[!Ref Prefix, 'hostedZoneId']]
+  TopicNotificationStack:
+    Value:
+      !Ref TopicNotificationStack
+    Export:
+      Name: !Join ['-',[!Ref Prefix, 'topicNotificationStack']]
+  VpcPeeringConnectionID:
+    Condition: canCreatePeering
+    Value: 
+      !Ref vpcPeeringConnection
+    Export: 
+      Name: !Join ['-',[!Ref Prefix, 'vpcPeeringConnectionID']]
