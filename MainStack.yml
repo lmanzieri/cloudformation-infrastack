@@ -18,7 +18,7 @@ Parameters:
     Type: String
     Default: us-east-1
   SubnetTemplateURL:
-    Default: https://s3.amazonaws.com/ativa-cf-templates/SubnetStack.yml
+    Default: https://s3.amazonaws.com/bacon-cf-templates/SubnetStack.yml
     Type: String
   MultiZoneDeploy:
     Type: String
@@ -39,7 +39,7 @@ Parameters:
   DomainName:
     Description: Domain name used to create a HostedZone in Route53
     Type: String
-    Default: ativainvestimentos.com.br
+    Default: bacon.com.br
   Prefix:
     Type: String
     AllowedValues:

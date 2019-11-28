@@ -1,4 +1,4 @@
-# Ativa Investimentos - Infra Cloud - Cloud Formation
+# Infra Cloud - Cloud Formation
 
 ## Pre Req
 
